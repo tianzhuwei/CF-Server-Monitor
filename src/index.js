@@ -10,33 +10,44 @@ const historyCache = new Map();
 const CACHE_TTL = 60000;
 const MAX_HOURS = 72;
 
-function downsampleData(data, hours) {
-  if (data.length <= 1) return data;
+function getBucketSeconds(hours) {
+  if (hours <= 12) return 120;
+  if (hours <= 24) return 300;
+  if (hours <= 48) return 600;
+  return 1200;
+}
+
+async function getMetricsHistory(db, serverId, rangeHours, columns) {
+  const bucketSeconds = getBucketSeconds(rangeHours);
+  const now = Date.now();
+  const cutoff = now - (rangeHours * 60 * 60 * 1000);
   
-  let intervalMs;
-  if (hours <= 4) {
-    return data;
-  } else if (hours <= 12) {
-    intervalMs = 2 * 60 * 1000;
-  } else if (hours <= 24) {
-    intervalMs = 5 * 60 * 1000;
-  } else if (hours <= 72) {
-    intervalMs = 13 * 60 * 1000;
-  } else {
-    intervalMs = 20 * 60 * 1000;
-  }
+  const selectColumns = columns.split(',').map(col => `b1.${col.trim()}`).join(', ');
   
-  const sampled = [];
-  let lastTimestamp = null;
+  const query = `
+    WITH bucketed AS (
+      SELECT id, server_id, timestamp, ${columns},
+        CAST(timestamp / (? * 1000) AS INTEGER) AS bucket
+      FROM metrics_history
+      WHERE server_id = ?
+        AND typeof(timestamp) = 'integer'
+        AND timestamp >= ?
+    )
+    SELECT b1.id, b1.server_id, b1.timestamp, ${selectColumns}
+    FROM bucketed b1
+    WHERE b1.timestamp = (
+      SELECT MIN(b2.timestamp)
+      FROM bucketed b2
+      WHERE b2.bucket = b1.bucket
+    )
+    ORDER BY b1.timestamp ASC
+  `;
   
-  for (const point of data) {
-    if (lastTimestamp === null || point.timestamp - lastTimestamp >= intervalMs) {
-      sampled.push(point);
-      lastTimestamp = point.timestamp;
-    }
-  }
+  const result = await db.prepare(query)
+    .bind(bucketSeconds, serverId, cutoff)
+    .all();
   
-  return sampled;
+  return result.results;
 }
 
 async function fetchHistoryData(env, sys, request, id, hours, columns) {
@@ -64,22 +75,9 @@ async function fetchHistoryData(env, sys, request, id, hours, columns) {
     });
   }
   
-  const now = Date.now();
-  const cutoff = now - (clampedHours * 60 * 60 * 1000);
+  const sampled = await getMetricsHistory(env.DB, id, clampedHours, columns);
   
-  const history = await env.DB.prepare(`
-    SELECT timestamp, ${columns}
-    FROM metrics_history
-    WHERE server_id = ?
-    AND (
-      (typeof(timestamp) = 'integer' AND timestamp > ?)
-      OR
-      (typeof(timestamp) = 'text' AND timestamp > datetime('now', '-' || ? || ' hours'))
-    )
-    ORDER BY timestamp ASC
-  `).bind(id, cutoff, clampedHours).all();
-  
-  const processed = history.results.map(row => {
+  const processed = sampled.map(row => {
     let ts = row.timestamp;
     if (typeof ts === 'string') {
       ts = new Date(ts).getTime();
@@ -90,14 +88,12 @@ async function fetchHistoryData(env, sys, request, id, hours, columns) {
     };
   });
   
-  const sampled = downsampleData(processed, clampedHours);
-  
   historyCache.set(cacheKey, {
     timestamp: Date.now(),
-    data: sampled
+    data: processed
   });
   
-  return new Response(JSON.stringify(sampled), {
+  return new Response(JSON.stringify(processed), {
     headers: { 'Content-Type': 'application/json', 'X-Cache': 'MISS' }
   });
 }

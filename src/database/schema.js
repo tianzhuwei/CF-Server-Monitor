@@ -67,7 +67,7 @@ export async function initDatabase(db) {
       CREATE TABLE IF NOT EXISTS metrics_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         server_id TEXT NOT NULL,
-        timestamp DATETIME DEFAULT (datetime('now')),
+        timestamp INTEGER DEFAULT 0,
         cpu REAL DEFAULT 0,
         ram REAL DEFAULT 0,
         disk REAL DEFAULT 0,
@@ -148,9 +148,10 @@ export async function cleanupOldData(db) {
   try {
     const lastClean = await db.prepare(`SELECT value FROM settings WHERE key = 'last_cleanup'`).first();
     const now = Date.now();
-    const oneDay = 24 * 60 * 60 * 1000;
+    const oneHour = 60 * 60 * 1000;
+    const threeDays = 3 * 24 * 60 * 60 * 1000;
     
-    if (!lastClean || (now - parseInt(lastClean.value)) > oneDay) {
+    if (!lastClean || (now - parseInt(lastClean.value)) > oneHour) {
       let totalDeleted = 0;
       
       // 清理所有字符串格式的时间戳（旧版本遗留数据，如 "2026-05-26 03:50:23"）
@@ -160,7 +161,7 @@ export async function cleanupOldData(db) {
       totalDeleted += strDeleteResult.meta.changes || 0;
       
       // 清理3天前的数字格式时间戳数据
-      const cutoff = now - 3 * oneDay;
+      const cutoff = now - threeDays;
       const intDeleteResult = await db.prepare(
         `DELETE FROM metrics_history WHERE typeof(timestamp) = 'integer' AND timestamp < ?`
       ).bind(cutoff).run();
