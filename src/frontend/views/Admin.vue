@@ -137,12 +137,12 @@
                   </td>
                   <td>
                     <div class="action-group">
-                      <div class="cmd-input-wrapper">
+                      <div class="cmd-input-wrapper" :class="{ copied: copiedServerId === server.id }">
                         <span class="cmd-prompt">$</span>
                         <input type="text" readonly :value="getInstallCommand(server.id)" class="cmd-input">
                       </div>
                       <div class="action-btns">
-                        <button @click="copyCmd(getInstallCommand(server.id))" class="btn btn-icon btn-green" :title="trans.copy">📋</button>
+                        <button @click="copyCmd(server.id)" class="btn btn-icon btn-green" :title="trans.copy">{{ copiedServerId === server.id ? '✅' : '📋' }}</button>
                         <button @click="openEditModal(server)" class="btn btn-icon btn-blue" :title="trans.edit">✏️</button>
                         <button @click="openDeleteModal(server.id)" class="btn btn-icon btn-red" :title="trans.delete">🗑️</button>
                       </div>
@@ -329,10 +329,10 @@
             </p>
           </div>
 
-          <div class="cmd-input-wrapper" style="margin-bottom: 12px;">
+          <div class="cmd-input-wrapper" :class="{ copied: uninstallCopied }" style="margin-bottom: 12px;">
             <span class="cmd-prompt">$</span>
             <input type="text" readonly :value="getUninstallCommand()" class="cmd-input" style="flex: 1;">
-            <button @click="copyUninstallCmd" class="btn btn-icon btn-green" :title="trans.copy" style="margin-left: 8px;">📋</button>
+            <button @click="copyUninstallCmd" class="btn btn-icon btn-green" :title="trans.copy" style="margin-left: 8px;">{{ uninstallCopied ? '✅' : '📋' }}</button>
           </div>
 
           <p style="color: var(--text-muted); font-size: 11px; margin-bottom: 16px;">
@@ -413,6 +413,9 @@ const editForm = ref({
 
 const showDeleteModal = ref(false)
 const deleteServerId = ref('')
+
+const copiedServerId = ref(null)
+const uninstallCopied = ref(false)
 
 const handleLogin = async () => {
     loginError.value = ''
@@ -572,20 +575,17 @@ const getUninstallCommand = () => {
   return `curl -sL ${API_BASE}/install.sh | bash -s uninstall`
 }
 
-const copyCmd = async (cmd) => {
+const copyCmd = async (serverId) => {
+  const cmd = getInstallCommand(serverId)
   try {
     await navigator.clipboard.writeText(cmd)
   } catch (e) {
     document.execCommand('copy')
   }
-  
-  const btn = event.target
-  const originalText = btn.innerText
-  btn.innerText = '✓'
-  btn.style.color = 'var(--accent-green)'
+
+  copiedServerId.value = serverId
   setTimeout(() => {
-    btn.innerText = originalText
-    btn.style.color = ''
+    copiedServerId.value = null
   }, 1500)
 }
 
@@ -596,14 +596,10 @@ const copyUninstallCmd = async () => {
   } catch (e) {
     document.execCommand('copy')
   }
-  
-  const btn = event.target
-  const originalText = btn.innerText
-  btn.innerText = '✓'
-  btn.style.color = 'var(--accent-green)'
+
+  uninstallCopied.value = true
   setTimeout(() => {
-    btn.innerText = originalText
-    btn.style.color = ''
+    uninstallCopied.value = false
   }, 1500)
 }
 

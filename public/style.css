@@ -1567,6 +1567,19 @@ body::before {
     outline: none;
 }
 
+.cmd-input-wrapper.copied {
+    border-color: var(--accent-green);
+    box-shadow: 0 0 0 2px rgba(0, 212, 170, 0.15);
+}
+
+.cmd-input-wrapper.copied .cmd-prompt {
+    color: var(--accent-green);
+}
+
+.cmd-input-wrapper.copied .cmd-input {
+    color: var(--accent-green);
+}
+
 /* --------------------------------------------------------------------------
    30. Drag & Drop Components
    -------------------------------------------------------------------------- */
