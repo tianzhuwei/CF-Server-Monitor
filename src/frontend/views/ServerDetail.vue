@@ -59,11 +59,11 @@
         </div>
         <div class="sysinfo-item">
           <span class="sysinfo-label">💾 {{ trans.totalRam }}</span>
-          <span class="sysinfo-value">{{ formatBytes(server.ram_total) }}</span>
+          <span class="sysinfo-value">{{ formatBytes(server.ram_total*1024*1024) }}</span>
         </div>
         <div class="sysinfo-item">
           <span class="sysinfo-label">💿 {{ trans.totalDisk }}</span>
-          <span class="sysinfo-value">{{ formatBytes(server.disk_total) }}</span>
+          <span class="sysinfo-value">{{ formatBytes(server.disk_total*1024*1024) }}</span>
         </div>
         <div class="sysinfo-item">
           <span class="sysinfo-label">📊 {{ trans.loadAvg }}</span>
@@ -143,7 +143,7 @@
           </span>
           <div>
             <span class="chart-current-value">{{ diskPercent }}%</span>
-            <div class="chart-subtitle">{{ trans.used }} {{ formatBytes(server.disk_used) }} / {{ formatBytes(server.disk_total) }}</div>
+            <div class="chart-subtitle">{{ trans.used }} {{ formatBytes(server.disk_used*1024*1024) }} / {{ formatBytes(server.disk_total*1024*1024) }}</div>
           </div>
         </div>
         <div class="chart-body">
