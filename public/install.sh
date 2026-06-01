@@ -140,33 +140,37 @@ get_http_ping() {
 }
 
 get_tcp_ping() {
-    local host="$1"
+    local host="${1:-}"
     local port="${2:-443}"
+    local scheme="http"
+    local timing
 
-    local start_ms=0
-    local end_ms=0
-
-    start_ms=$(date +%s 2>/dev/null || echo 0)
-
-    if command -v timeout >/dev/null 2>&1; then
-        timeout 5 bash -c "exec 3<>/dev/tcp/${host}/${port}" >/dev/null 2>&1
-    else
-        bash -c "exec 3<>/dev/tcp/${host}/${port}" >/dev/null 2>&1
-    fi
-
-    local ret=$?
-
-    end_ms=$(date +%s 2>/dev/null || echo 0)
-
-    if [ "$ret" -ne 0 ]; then
-        echo "-1"
+    if [ -z "${host}" ]; then
+        echo "0"
         return
     fi
 
-    awk -v s="$start_ms" -v e="$end_ms" 'BEGIN{
-        d=(e-s)*1000
-        if(d<0)d=0
-        printf "%.0f\n", d
+    if [ "${port}" = "443" ]; then
+        scheme="https"
+    fi
+
+    timing=$(curl -k -o /dev/null -s \
+        --connect-timeout 2 \
+        --max-time 3 \
+        -w "%{time_namelookup} %{time_connect}" \
+        "${scheme}://${host}:${port}/" 2>/dev/null || true)
+
+    awk -v t="${timing}" 'BEGIN{
+        split(t, a, " ")
+        dns = a[1] + 0
+        conn = a[2] + 0
+        if (conn <= 0 || conn < dns) {
+            print 0
+            exit
+        }
+        ms = int((conn - dns) * 1000 + 0.5)
+        if (ms < 1) ms = 1
+        print ms
     }'
 }
 
