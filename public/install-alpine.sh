@@ -42,6 +42,10 @@ warn()  { printf '%b[!]%b %s\n' "${YELLOW}" "${NC}" "$1"; }
 error() { printf '%b[✗]%b %s\n' "${RED}"   "${NC}" "$1"; exit 1; }
 step()  { printf '%b[→]%b %s\n' "${BLUE}"  "${NC}" "$1"; }
 
+sed_escape() {
+    printf '%s' "${1:-}" | sed 's/\\/\\\\/g; s/&/\\&/g; s/@/\\@/g; s/\//\\\//g; s/|/\\|/g; s/"/\\"/g'
+}
+
 check_root() {
     if [ "$(id -u)" != "0" ]; then
         error "请使用 root 权限运行此脚本: sudo sh $0"
@@ -564,7 +568,8 @@ PROBE_EOF
     # 这里使用临时文件方式以兼容任何 sed
     local tmpfile
     tmpfile="${SCRIPT_FILE}.tmp"
-    sed "s/PING_TYPE_PLACEHOLDER/${ping_type}/g" "${SCRIPT_FILE}" > "$tmpfile" && mv "$tmpfile" "${SCRIPT_FILE}"
+    local esc_ping; esc_ping=$(sed_escape "${ping_type}")
+    sed "s@PING_TYPE_PLACEHOLDER@${esc_ping}@g" "${SCRIPT_FILE}" > "$tmpfile" && mv "$tmpfile" "${SCRIPT_FILE}"
 
     chmod +x "${SCRIPT_FILE}"
     info "探针脚本注入完成: ${SCRIPT_FILE}"
@@ -865,6 +870,140 @@ EOF
 # ---------------------------------------------------------------
 # 卸载主流程
 # ---------------------------------------------------------------
+update_probe() {
+    update_url="${1:-}"
+    
+    print_banner
+    printf '%b[!] 开始升级 CF-Server-Monitor...%b\n\n' "${YELLOW}" "${NC}"
+    
+    if [ -z "$update_url" ]; then
+        error "升级需要指定更新源URL，请通过管道传入: curl -sL <url> | sh -s update"
+    fi
+    
+    check_root
+    detect_os
+    
+    if [ ! -f "${SCRIPT_FILE}" ]; then
+        error "未找到现有探针: ${SCRIPT_FILE}，请先执行安装。"
+    fi
+    
+    info "检测到现有探针，将直接更新脚本..."
+    
+    step "正在下载最新安装脚本..."
+    temp_script="/tmp/cf-probe-install-$$.sh"
+    if ! curl -sL "$update_url" -o "$temp_script" 2>/dev/null; then
+        rm -f "$temp_script"
+        error "下载失败，请检查URL是否可访问: $update_url"
+    fi
+    
+    if ! grep -q "install_probe" "$temp_script" 2>/dev/null; then
+        rm -f "$temp_script"
+        error "下载的脚本无效。"
+    fi
+    
+    step "提取新版本探针脚本..."
+    local start_line
+    start_line=$(grep -n "<< 'PROBE_EOF'" "$temp_script" 2>/dev/null | head -1 | cut -d: -f1 || true)
+    if [ -z "$start_line" ]; then
+        rm -f "$temp_script"
+        error "无法找到探针内容起始标记 (heredoc start)。"
+    fi
+    
+    new_probe_content=$(tail -n +$((start_line + 1)) "$temp_script" 2>/dev/null | sed -n '/^PROBE_EOF$/q;p' || true)
+    
+    if [ -z "$new_probe_content" ]; then
+        rm -f "$temp_script"
+        error "无法提取探针内容，请确认下载的脚本包含有效的探针代码。"
+    fi
+    
+    step "停止服务..."
+    if [ "$INIT_SYSTEM" = "openrc" ] && [ -f "$OPENRC_FILE" ]; then
+        rc-service "$SERVICE_NAME" stop >/dev/null 2>&1 || true
+    elif [ -f "$PID_FILE" ]; then
+        old_pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" >/dev/null 2>&1; then
+            kill -TERM "$old_pid" >/dev/null 2>&1 || true
+            sleep 1
+            kill -9 "$old_pid" >/dev/null 2>&1 || true
+        fi
+    fi
+    
+    step "更新探针脚本..."
+    echo "$new_probe_content" > "${SCRIPT_FILE}"
+    chmod +x "${SCRIPT_FILE}"
+    
+    step "重启服务..."
+    if [ "$INIT_SYSTEM" = "openrc" ]; then
+        rc-update add "${SERVICE_NAME}" default >/dev/null 2>&1 || true
+        rc-service "${SERVICE_NAME}" restart || error "服务启动失败"
+    else
+        sh "${SCRIPT_FILE}.ctl" start || error "服务启动失败"
+    fi
+    
+    rm -f "$temp_script"
+    
+    sleep 2
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
+        # 从服务文件提取配置参数（使用 awk 兼容 sh）
+        local exec_line s_id s_sec s_url s_interval s_ping s_ct s_cu s_cm s_bd s_reset
+        if [ "$INIT_SYSTEM" = "openrc" ] && [ -f "$OPENRC_FILE" ]; then
+            exec_line=$(grep "^command_args=" "$OPENRC_FILE" 2>/dev/null | head -1 || echo "")
+            # command_args 格式: /usr/local/bin/cf-probe.sh "id" "sec" "url" ...
+            s_id=$(echo "$exec_line" | awk '{print $2}' | tr -d '"' || echo "")
+            s_sec=$(echo "$exec_line" | awk '{print $3}' | tr -d '"' || echo "")
+            s_url=$(echo "$exec_line" | awk '{print $4}' | tr -d '"' || echo "")
+            s_interval=$(echo "$exec_line" | awk '{print $5}' | tr -d '"' || echo "60")
+            s_ping=$(echo "$exec_line" | awk '{print $6}' | tr -d '"' || echo "http")
+            s_ct=$(echo "$exec_line" | awk '{print $7}' | tr -d '"' || echo "")
+            s_cu=$(echo "$exec_line" | awk '{print $8}' | tr -d '"' || echo "")
+            s_cm=$(echo "$exec_line" | awk '{print $9}' | tr -d '"' || echo "")
+            s_bd=$(echo "$exec_line" | awk '{print $10}' | tr -d '"' || echo "")
+            s_reset=$(echo "$exec_line" | awk '{print $11}' | tr -d '"' || echo "1")
+        else
+            exec_line=$(grep "^START_CMD=" "${SCRIPT_FILE}.ctl" 2>/dev/null | head -1 || echo "")
+            # START_CMD 格式: START_CMD=/usr/local/bin/cf-probe.sh "id" "sec" ...
+            s_id=$(echo "$exec_line" | sed 's/^START_CMD=//' | awk '{print $2}' | tr -d '"' || echo "")
+            s_sec=$(echo "$exec_line" | sed 's/^START_CMD=//' | awk '{print $3}' | tr -d '"' || echo "")
+            s_url=$(echo "$exec_line" | sed 's/^START_CMD=//' | awk '{print $4}' | tr -d '"' || echo "")
+            s_interval=$(echo "$exec_line" | sed 's/^START_CMD=//' | awk '{print $5}' | tr -d '"' || echo "60")
+            s_ping=$(echo "$exec_line" | sed 's/^START_CMD=//' | awk '{print $6}' | tr -d '"' || echo "http")
+            s_ct=$(echo "$exec_line" | sed 's/^START_CMD=//' | awk '{print $7}' | tr -d '"' || echo "")
+            s_cu=$(echo "$exec_line" | sed 's/^START_CMD=//' | awk '{print $8}' | tr -d '"' || echo "")
+            s_cm=$(echo "$exec_line" | sed 's/^START_CMD=//' | awk '{print $9}' | tr -d '"' || echo "")
+            s_bd=$(echo "$exec_line" | sed 's/^START_CMD=//' | awk '{print $10}' | tr -d '"' || echo "")
+            s_reset=$(echo "$exec_line" | sed 's/^START_CMD=//' | awk '{print $11}' | tr -d '"' || echo "1")
+        fi
+        
+        printf '\n%b=============================================%b\n' "${GREEN}" "${NC}"
+        printf  '         CF-Server-Monitor 升级成功\n'
+        printf  '%b=============================================%b\n' "${GREEN}" "${NC}"
+        printf  '  服务状态 : %bActive (Running)%b\n' "${GREEN}" "${NC}"
+        printf  '  配置参数 :\n'
+        printf  '    ● Server ID   : %s\n' "${s_id}"
+        printf  '    ● Secret      : %s\n' "${s_sec}"
+        printf  '    ● Worker URL  : %s\n' "${s_url}"
+        printf  '    ● 上报间隔    : %s秒\n' "${s_interval}"
+        printf  '    ● 探测类型    : %s\n' "${s_ping}"
+        printf  '    ● 流量重置日  : %s号\n' "${s_reset}"
+        [ -n "${s_ct}" ] && printf  '    ● CT节点      : %s\n' "${s_ct}"
+        [ -n "${s_cu}" ] && printf  '    ● CU节点      : %s\n' "${s_cu}"
+        [ -n "${s_cm}" ] && printf  '    ● CM节点      : %s\n' "${s_cm}"
+        [ -n "${s_bd}" ] && printf  '    ● BD节点      : %s\n' "${s_bd}"
+        printf  '  管理指令 :\n'
+        if [ "$INIT_SYSTEM" = "openrc" ]; then
+            printf  '    ● 查看日志     : tail -f %s\n' "${LOG_FILE}"
+            printf  '    ● 查看状态    : rc-service %s status\n' "${SERVICE_NAME}"
+            printf  '    ● 启动/停止  : rc-service %s {start|stop|restart}\n' "${SERVICE_NAME}"
+        else
+            printf  '    ● 查看日志     : tail -f %s\n' "${LOG_FILE}"
+            printf  '    ● 启动/停止  : sh %s {start|stop|restart|status|log}\n' "${SCRIPT_FILE}.ctl"
+        fi
+        printf  '%b=============================================%b\n\n' "${GREEN}" "${NC}"
+    else
+        warn "服务可能未启动成功，请检查日志。"
+    fi
+}
+
 uninstall_probe() {
     print_banner
     printf '%b[!] 开始执行无残留深度卸载清理方案...%b\n\n' "${YELLOW}" "${NC}"
@@ -906,8 +1045,12 @@ case "${1:-install}" in
     uninstall|remove|delete|purge)
         uninstall_probe
         ;;
+    update|upgrade)
+        shift 1 2>/dev/null || true
+        update_probe "$@"
+        ;;
     *)
-        echo "未知指令. 可选命令: install | uninstall"
+        echo "未知指令. 可选命令: install | uninstall | update"
         exit 1
         ;;
 esac

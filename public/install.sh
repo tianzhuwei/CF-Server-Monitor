@@ -32,6 +32,17 @@ warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 step() { echo -e "${BLUE}[→]${NC} $1"; }
 
+sed_escape() {
+    local val="${1:-}"
+    val="${val//\\/\\\\}"
+    val="${val//&/\\&}"
+    val="${val//@/\\@}"
+    val="${val//\//\\/}"
+    val="${val//|/\\|}"
+    val="${val//\"/\\\"}"
+    echo -n "$val"
+}
+
 check_root() {
     if [ "$(id -u)" != "0" ]; then
         error "请使用 root 权限运行此脚本: sudo bash $0"
@@ -524,12 +535,13 @@ EOF
 done
 PROBE_EOF
 
-    sed -i "s/PING_TYPE_PLACEHOLDER/${ping_type}/g" "${SCRIPT_FILE}"
+    local esc_ping; esc_ping=$(sed_escape "${ping_type}")
+    sed -i "s@PING_TYPE_PLACEHOLDER@${esc_ping}@g" "${SCRIPT_FILE}"
     
-    [ -n "${ct_node}" ] && sed -i "s|CT_NODE=\".*\"|CT_NODE=\"${ct_node}\"|g" "${SCRIPT_FILE}"
-    [ -n "${cu_node}" ] && sed -i "s|CU_NODE=\".*\"|CU_NODE=\"${cu_node}\"|g" "${SCRIPT_FILE}"
-    [ -n "${cm_node}" ] && sed -i "s|CM_NODE=\".*\"|CM_NODE=\"${cm_node}\"|g" "${SCRIPT_FILE}"
-    [ -n "${bd_node}" ] && sed -i "s|BD_NODE=\".*\"|BD_NODE=\"${bd_node}\"|g" "${SCRIPT_FILE}"
+    [ -n "${ct_node}" ] && local esc_ct; esc_ct=$(sed_escape "${ct_node}") && sed -i "s@CT_NODE=\".*\"@CT_NODE=\"${esc_ct}\"@g" "${SCRIPT_FILE}"
+    [ -n "${cu_node}" ] && local esc_cu; esc_cu=$(sed_escape "${cu_node}") && sed -i "s@CU_NODE=\".*\"@CU_NODE=\"${esc_cu}\"@g" "${SCRIPT_FILE}"
+    [ -n "${cm_node}" ] && local esc_cm; esc_cm=$(sed_escape "${cm_node}") && sed -i "s@CM_NODE=\".*\"@CM_NODE=\"${esc_cm}\"@g" "${SCRIPT_FILE}"
+    [ -n "${bd_node}" ] && local esc_bd; esc_bd=$(sed_escape "${bd_node}") && sed -i "s@BD_NODE=\".*\"@BD_NODE=\"${esc_bd}\"@g" "${SCRIPT_FILE}"
 
     # 应用流量校正（单位: GB，转换为字节）
     if [ -n "${rx_correction}" ] || [ -n "${tx_correction}" ]; then
@@ -754,6 +766,120 @@ install_probe() {
     echo -e "=============================================\n"
 }
 
+update_probe() {
+    local update_url="${1:-}"
+    
+    print_banner
+    echo -e "${YELLOW}[!] 开始升级 CF-Server-Monitor...${NC}\n"
+    
+    if [ -z "$update_url" ]; then
+        error "升级需要指定更新源URL: curl -sL <url> | bash -s update <url>"
+    fi
+    
+    check_root
+    detect_os
+    
+    # 检查现有配置是否存在
+    if [ ! -f "${SCRIPT_FILE}" ]; then
+        error "未找到现有探针: ${SCRIPT_FILE}，请先执行安装。"
+    fi
+    
+    info "检测到现有探针，将直接更新脚本..."
+    
+    step "正在下载最新安装脚本..."
+    local temp_script="/tmp/cf-probe-install-$$.sh"
+    if ! curl -sL "$update_url" -o "$temp_script" 2>/dev/null; then
+        rm -f "$temp_script"
+        error "下载失败，请检查URL是否可访问: $update_url"
+    fi
+    
+    if ! grep -q "install_probe" "$temp_script" 2>/dev/null; then
+        rm -f "$temp_script"
+        error "下载的脚本无效。"
+    fi
+    
+    # 提取新版本探针脚本内容
+    step "提取新版本探针脚本..."
+    # 查找包含 << 'PROBE_EOF' 的行（heredoc开始标记），提取之后的内容直到单独的 PROBE_EOF
+    local start_line
+    start_line=$(grep -n "<< 'PROBE_EOF'" "$temp_script" 2>/dev/null | head -1 | cut -d: -f1 || true)
+    if [ -z "$start_line" ]; then
+        rm -f "$temp_script"
+        error "无法找到探针内容起始标记 (heredoc start)。"
+    fi
+    
+    # 提取heredoc内容（从下一行开始，直到单独的PROBE_EOF）
+    new_probe_content=$(tail -n +$((start_line + 1)) "$temp_script" 2>/dev/null | sed -n '/^PROBE_EOF$/q;p' || true)
+    
+    if [ -z "$new_probe_content" ]; then
+        rm -f "$temp_script"
+        error "无法提取探针内容，请确认下载的脚本包含有效的探针代码。"
+    fi
+    
+    # 停止旧服务
+    step "停止服务..."
+    if systemctl is-active --quiet "${SERVICE_NAME}.service" 2>/dev/null; then
+        systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
+    fi
+    
+    # 写入新探针脚本
+    step "更新探针脚本..."
+    echo "$new_probe_content" > "${SCRIPT_FILE}"
+    
+    chmod +x "${SCRIPT_FILE}"
+    
+    # 重启服务
+    step "重启服务..."
+    systemctl daemon-reload
+    systemctl enable ${SERVICE_NAME}.service >/dev/null 2>&1 || true
+    systemctl restart ${SERVICE_NAME}.service
+    
+    rm -f "$temp_script"
+    
+    sleep 1
+    if systemctl is-active --quiet ${SERVICE_NAME}.service; then
+        # 从service文件提取配置参数
+        local exec_line
+        exec_line=$(grep "^ExecStart=" "${SERVICE_FILE}" 2>/dev/null | head -1 || echo "")
+        
+        # 按引号字段提取（ExecStart行格式固定）
+        local s_id s_sec s_url s_interval s_ping s_ct s_cu s_cm s_bd s_reset
+        s_id=$(echo "$exec_line" | awk -F'"' '{print $4}' 2>/dev/null || echo "")
+        s_sec=$(echo "$exec_line" | awk -F'"' '{print $6}' 2>/dev/null || echo "")
+        s_url=$(echo "$exec_line" | awk -F'"' '{print $8}' 2>/dev/null || echo "")
+        s_interval=$(echo "$exec_line" | awk -F'"' '{print $10}' 2>/dev/null || echo "60")
+        s_ping=$(echo "$exec_line" | awk -F'"' '{print $12}' 2>/dev/null || echo "http")
+        s_ct=$(echo "$exec_line" | awk -F'"' '{print $14}' 2>/dev/null || echo "")
+        s_cu=$(echo "$exec_line" | awk -F'"' '{print $16}' 2>/dev/null || echo "")
+        s_cm=$(echo "$exec_line" | awk -F'"' '{print $18}' 2>/dev/null || echo "")
+        s_bd=$(echo "$exec_line" | awk -F'"' '{print $20}' 2>/dev/null || echo "")
+        s_reset=$(echo "$exec_line" | awk -F'"' '{print $22}' 2>/dev/null || echo "1")
+        
+        echo -e "\n${GREEN}============================================="
+        echo -e "         CF-Server-Monitor 升级成功"
+        echo -e "=============================================${NC}"
+        echo -e "  服务状态 : ${GREEN}Active (Running)${NC}"
+        echo -e "  配置参数 :"
+        echo -e "    ● Server ID   : ${s_id}"
+        echo -e "    ● Secret      : ${s_sec}"
+        echo -e "    ● Worker URL  : ${s_url}"
+        echo -e "    ● 上报间隔    : ${s_interval}秒"
+        echo -e "    ● 探测类型    : ${s_ping}"
+        echo -e "    ● 流量重置日  : ${s_reset}号"
+        [ -n "${s_ct}" ] && echo -e "    ● CT节点      : ${s_ct}"
+        [ -n "${s_cu}" ] && echo -e "    ● CU节点      : ${s_cu}"
+        [ -n "${s_cm}" ] && echo -e "    ● CM节点      : ${s_cm}"
+        [ -n "${s_bd}" ] && echo -e "    ● BD节点      : ${s_bd}"
+        echo -e "  管理指令 :"
+        echo -e "    ● 查看实时日志 : journalctl -u ${SERVICE_NAME} -f"
+        echo -e "    ● 查看运行状态 : systemctl status ${SERVICE_NAME}"
+        echo -e "    ● 停止探针服务 : systemctl stop ${SERVICE_NAME}"
+        echo -e "=============================================\n"
+    else
+        error "服务启动失败，请检查: journalctl -u ${SERVICE_NAME} -n 20"
+    fi
+}
+
 uninstall_probe() {
     print_banner
     echo -e "${YELLOW}[!] 开始执行无残留深度卸载清理方案...${NC}\n"
@@ -799,8 +925,12 @@ case "${1:-install}" in
     uninstall|remove|delete|purge)
         uninstall_probe
         ;;
+    update|upgrade)
+        shift 1 2>/dev/null || true
+        update_probe "$@"
+        ;;
     *)
-        echo "未知指令. 可选命令: install | uninstall"
+        echo "未知指令. 可选命令: install | uninstall | update"
         exit 1
         ;;
 esac

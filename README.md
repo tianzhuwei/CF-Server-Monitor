@@ -253,6 +253,94 @@ curl -sL https://你的项目.你的子域.workers.dev/install-openwrt.sh | sh -
 </details>
 
 <details>
+<summary>升级 Cloudflare Workers</summary>
+
+根据您使用的安装方式，选择对应的升级方法：
+
+### 方式一：Cloudflare Workers 连接 GitHub 仓库
+
+由于 Cloudflare Workers 直接连接 GitHub 仓库，升级非常简单：
+
+1. 进入您 Fork 的 GitHub 仓库页面
+2. 点击 **Sync fork** → **Update branch** 同步上游更新
+3. Cloudflare Workers 会自动检测到代码变更并重新部署
+
+或者使用命令行同步：
+
+```bash
+# 进入本地仓库目录
+cd CF-Server-Monitor
+
+# 添加上游仓库（首次需要）
+git remote add upstream https://github.com/huilang-me/CF-Server-Monitor.git
+
+# 拉取上游更新
+git fetch upstream
+
+# 合并到本地 main 分支
+git checkout main
+git merge upstream/main
+
+# 推送到您的仓库
+git push origin main
+```
+
+推送后 Cloudflare Workers 会自动部署最新版本。
+
+### 方式二：GitHub Action 自动部署
+
+与方式一类似，同步上游仓库后推送即可：
+
+1. 同步上游仓库（参考方式一的步骤）
+2. 推送代码后 GitHub Actions 会自动触发部署
+3. 在仓库的 **Actions** 标签页查看部署进度
+
+也可以手动触发部署：
+1. 进入 GitHub 仓库 → **Actions** → **Deploy to Cloudflare Workers**
+2. 点击 **Run workflow** → 选择分支 → **Run workflow**
+
+### 方式三：一键部署
+
+一键部署方式升级较为麻烦，建议重新部署：
+
+1. 访问 [一键部署页面](https://deploy.workers.cloudflare.com/?url=https://github.com/huilang-me/CF-Server-Monitor)
+2. 选择已存在的项目进行更新
+3. 在 build command 中填入 `npm run build:frontend`
+4. 点击部署
+
+> **注意**：一键部署方式不方便同步更新，建议迁移到方式一或方式二。
+
+</details>
+
+
+<details>
+<summary>升级探针</summary>
+
+当有新版本发布时，可以通过以下命令升级探针，升级过程会自动保留原有配置：
+
+Ubuntu / Debian / CentOS / RHEL / Fedora / Rocky / AlmaLinux 系统
+
+```bash
+curl -sL https://你的项目.你的子域.workers.dev/install.sh | bash -s update https://你的项目.你的子域.workers.dev/install.sh
+```
+
+Alpine 系统
+
+```bash
+curl -sL https://你的项目.你的子域.workers.dev/install-alpine.sh | sh -s update https://你的项目.你的子域.workers.dev/install-alpine.sh
+```
+
+OpenWrt / LEDE / ImmortalWrt 系统
+
+```bash
+curl -sL https://你的项目.你的子域.workers.dev/install-openwrt.sh | sh -s update https://你的项目.你的子域.workers.dev/install-openwrt.sh
+```
+
+> **注意**：升级命令需要两次传入脚本 URL，第一次通过管道传入脚本本身，第二次作为 update 命令的参数指定更新源 URL。
+
+</details>
+
+<details>
 <summary>卸载探针</summary>
 
 Ubuntu / Debian / CentOS / RHEL / Fedora / Rocky / AlmaLinux 系统

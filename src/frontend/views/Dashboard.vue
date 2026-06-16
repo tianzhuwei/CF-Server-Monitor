@@ -101,6 +101,7 @@
               <th>{{ trans.cpu }}</th>
               <th>{{ trans.ram }}</th>
               <th>{{ trans.disk }}</th>
+              <th>{{ trans.use }}</th>
               <th>{{ trans.dl }}</th>
               <th>{{ trans.ul }}</th>
               <th>{{ trans.rx }}</th>
@@ -110,13 +111,13 @@
           </thead>
           <tbody>
             <tr v-if="isLoading">
-              <td colspan="12" class="table-empty-state">
+              <td class="table-empty-state">
                 <div class="loading-spinner-small"></div>
                 <span>$ {{ trans.loading }}</span>
               </td>
             </tr>
             <tr v-else-if="filteredServers.length === 0">
-              <td colspan="12" class="table-empty-state">[*] {{ trans.noData }}</td>
+              <td class="table-empty-state">[*] {{ trans.noData }}</td>
             </tr>
             <tr 
               v-for="server in filteredServers" 
@@ -161,6 +162,15 @@
                   <span>{{ (parseFloat(server.disk) || 0).toFixed(1) }}%</span>
                 </div>
               </td>
+              <td v-if="sysConfig.show_tf && server.traffic_limit">
+                <div class="table-stat">
+                  <div class="stat-bar-container stat-bar-small">
+                    <div class="stat-bar-fill" :style="{ width: Math.min(100, parseFloat(getTrafficUsagePercent(server))) + '%', background: 'var(--accent-blue)' }"></div>
+                  </div>
+                  <span>{{ getTrafficUsagePercent(server) }}%</span>
+                </div>
+              </td>
+              <td v-else>-</td>
               <td>{{ formatBytes(server.net_in_speed) }}/s</td>
               <td>{{ formatBytes(server.net_out_speed) }}/s</td>
               <td>{{ formatBytes(server.net_rx) }}</td>
@@ -262,6 +272,26 @@ const getUpdateTime = (lastUpdated) => {
   if (!lastUpdated) return '-'
   const date = new Date(lastUpdated)
   return date.toLocaleString(undefined, { hour12: false })
+}
+
+const getTrafficUsagePercent = (server) => {
+  const limit = parseFloat(server.traffic_limit) || 0
+  if (limit <= 0) return '0'
+
+  const limitBytes = limit * 1024 * 1024 * 1024
+  let usedBytes = 0
+
+  const calcType = server.traffic_calc_type || 'total'
+  if (calcType === 'dl') {
+    usedBytes = parseFloat(server.net_rx_monthly) || 0
+  } else if (calcType === 'ul') {
+    usedBytes = parseFloat(server.net_tx_monthly) || 0
+  } else {
+    usedBytes = (parseFloat(server.net_rx_monthly) || 0) + (parseFloat(server.net_tx_monthly) || 0)
+  }
+
+  const percent = (usedBytes / limitBytes) * 100
+  return percent.toFixed(1)
 }
 
 // 用最新数据增量更新单台服务器信息
