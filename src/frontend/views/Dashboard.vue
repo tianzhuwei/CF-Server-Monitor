@@ -104,8 +104,6 @@
               <th>{{ trans.use }}</th>
               <th>{{ trans.dl }}</th>
               <th>{{ trans.ul }}</th>
-              <th>{{ trans.rx }}</th>
-              <th>{{ trans.tx }}</th>
               <th>{{ trans.update }}</th>
             </tr>
           </thead>
@@ -173,9 +171,7 @@
               <td v-else>-</td>
               <td>{{ formatBytes(server.net_in_speed) }}/s</td>
               <td>{{ formatBytes(server.net_out_speed) }}/s</td>
-              <td>{{ formatBytes(server.net_rx) }}</td>
-              <td>{{ formatBytes(server.net_tx) }}</td>
-              <td class="update-time">{{ getUpdateTime(server.last_updated) }}</td>
+              <td class="update-time label-small">{{ getUpdateTime(server.last_updated) }}</td>
             </tr>
           </tbody>
         </table>

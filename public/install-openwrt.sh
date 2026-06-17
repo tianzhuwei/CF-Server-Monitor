@@ -58,18 +58,29 @@ check_root() {
 # OS / Init 系统探测
 # ---------------------------------------------------------------
 detect_os() {
-    if [ -f /etc/openwrt_release ]; then
-        OS_ID="openwrt"
-    elif [ -f /etc/os-release ]; then
+    if [ -f /etc/os-release ]; then
         OS_ID=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"' | tr -d "'")
+    elif [ -f /etc/openwrt_release ]; then
+        OS_ID="openwrt"
     else
         OS_ID=$(uname -s | tr '[:upper:]' '[:lower:]')
     fi
     OS_ID=${OS_ID:-"unknown"}
 
     case "$OS_ID" in
-        openwrt|lede|immortalwrt) PKG_MGR="opkg" ;;
-        *) warn "检测到非 OpenWrt 系统: $OS_ID，仍将尝试使用 opkg" ; PKG_MGR="opkg" ;;
+        immortalwrt|openwrt|lede)
+            if command -v apk >/dev/null 2>&1; then
+                PKG_MGR="apk"
+            elif command -v opkg >/dev/null 2>&1; then
+                PKG_MGR="opkg"
+            else
+                error "未找到可用的包管理器 (apk/opkg)，当前系统: $OS_ID"
+            fi
+            ;;
+        *)
+            warn "检测到非 OpenWrt 系统: $OS_ID，仍将尝试使用 opkg"
+            PKG_MGR="opkg"
+            ;;
     esac
 
     # 探测 init 系统
@@ -90,23 +101,33 @@ detect_os() {
 install_deps() {
     step "检查系统依赖组件..."
 
-    # OpenWrt 需要的包
-    # curl:      HTTP 上报
-    # coreutils: 提供完整的 date、df 等
-    # procps-ng: 提供完整的 pgrep、pkill
-    # ip-full:   提供 ss 命令（网络连接统计）
     required_pkgs="curl coreutils procps-ng ip-full"
 
-    if ! command -v opkg >/dev/null 2>&1; then
-        error "未找到 opkg 包管理器，当前系统不是 OpenWrt 系列。"
-    fi
-
-    step "更新 OPKG 索引并安装基础依赖..."
-    opkg update >/dev/null 2>&1 || true
-    # shellcheck disable=SC2086
-    opkg install $required_pkgs >/dev/null 2>&1 || \
-        opkg install --force-overwrite $required_pkgs >/dev/null 2>&1 || \
-        warn "部分依赖安装失败，请手动执行: opkg install $required_pkgs"
+    case "$PKG_MGR" in
+        apk)
+            if ! command -v apk >/dev/null 2>&1; then
+                error "未找到 apk 包管理器。"
+            fi
+            step "刷新 APK 索引并安装基础依赖..."
+            apk update --quiet >/dev/null 2>&1 || true
+            apk add --no-cache --quiet $required_pkgs >/dev/null 2>&1 || \
+                apk add --no-cache $required_pkgs || \
+                warn "部分依赖安装失败，请手动执行: apk add $required_pkgs"
+            ;;
+        opkg)
+            if ! command -v opkg >/dev/null 2>&1; then
+                error "未找到 opkg 包管理器，当前系统不是 OpenWrt 系列。"
+            fi
+            step "更新 OPKG 索引并安装基础依赖..."
+            opkg update >/dev/null 2>&1 || true
+            opkg install $required_pkgs >/dev/null 2>&1 || \
+                opkg install --force-overwrite $required_pkgs >/dev/null 2>&1 || \
+                warn "部分依赖安装失败，请手动执行: opkg install $required_pkgs"
+            ;;
+        *)
+            error "未知的包管理器: $PKG_MGR"
+            ;;
+    esac
 
     required_cmds="curl awk grep sed"
     for cmd in $required_cmds; do
@@ -127,7 +148,7 @@ install_deps() {
     # 提示 init 情况
     case "$INIT_SYSTEM" in
         procd)   info "检测到 procd，将注册为 OpenWrt 系统服务。" ;;
-        openrc)  warn "检测到 OpenRC — 建议使用 install-alpine.sh。" ;;
+        openrc)  info "检测到 OpenRC，将注册为系统服务。" ;;
         systemd) warn "检测到 systemd — 建议使用 install.sh。" ;;
         manual)  warn "未检测到 init 系统，将采用后台进程方式运行。" ;;
     esac
@@ -143,6 +164,10 @@ stop_old_service() {
     if [ "$INIT_SYSTEM" = "procd" ] && [ -f "$PROCD_FILE" ]; then
         "$PROCD_FILE" stop >/dev/null 2>&1 || true
         "$PROCD_FILE" disable >/dev/null 2>&1 || true
+        rm -f "$PROCD_FILE"
+    elif [ "$INIT_SYSTEM" = "openrc" ] && [ -f "$PROCD_FILE" ]; then
+        rc-service "$SERVICE_NAME" stop >/dev/null 2>&1 || true
+        rc-update del "$SERVICE_NAME" default >/dev/null 2>&1 || true
         rm -f "$PROCD_FILE"
     fi
 
@@ -633,8 +658,30 @@ service_triggers() {
 EOF
         chmod +x "${PROCD_FILE}"
         info "procd 服务脚本生成: ${PROCD_FILE}"
+    elif [ "$INIT_SYSTEM" = "openrc" ]; then
+        step "构建 OpenRC init 脚本..."
+        cat > "${PROCD_FILE}" << EOF
+#!/sbin/openrc-run
+# CF-Server-Monitor Probe Agent (ImmortalWrt / OpenRC)
+
+description="CF Server Monitor Probe Agent"
+command="/bin/sh"
+command_args="${SCRIPT_FILE} ${esc_id} ${esc_sec} ${esc_url} ${REPORT_INTERVAL} ${esc_ping} ${esc_ct} ${esc_cu} ${esc_cm} ${esc_bd} ${esc_reset_day}"
+command_background="yes"
+pidfile="${PID_FILE}"
+output_log="${LOG_FILE}"
+error_log="${LOG_FILE}"
+
+depend() {
+    need net
+    use dns
+    after firewall
+}
+EOF
+        chmod +x "${PROCD_FILE}"
+        info "OpenRC 服务脚本生成: ${PROCD_FILE}"
     else
-        step "非 procd 环境 — 将使用手动后台进程方式运行..."
+        step "非 procd/OpenRC 环境 — 将使用手动后台进程方式运行..."
         info "启停命令将写入: ${SCRIPT_FILE}.ctl"
     fi
 
@@ -703,6 +750,9 @@ start_service() {
     if [ "$INIT_SYSTEM" = "procd" ]; then
         "$PROCD_FILE" enable >/dev/null 2>&1 || true
         "$PROCD_FILE" restart || error "procd 服务启动失败，请检查日志: tail -n 30 ${LOG_FILE}"
+    elif [ "$INIT_SYSTEM" = "openrc" ]; then
+        rc-update add "${SERVICE_NAME}" default >/dev/null 2>&1 || true
+        rc-service "${SERVICE_NAME}" restart || error "OpenRC 服务启动失败，请检查日志: tail -n 30 ${LOG_FILE}"
     else
         sh "${SCRIPT_FILE}.ctl" start || error "后台进程启动失败，请检查日志: tail -n 30 ${LOG_FILE}"
     fi
@@ -713,7 +763,10 @@ start_service() {
         info "探针监控引擎已进入平稳运行状态。"
     else
         warn "探针服务可能未启动成功。请排查: tail -n 30 ${LOG_FILE}"
-        warn "在 OpenWrt 上可执行: ${PROCD_FILE} status"
+        case "$INIT_SYSTEM" in
+            procd) warn "在 OpenWrt 上可执行: ${PROCD_FILE} status" ;;
+            openrc) warn "在 OpenRC 上可执行: rc-service ${SERVICE_NAME} status" ;;
+        esac
     fi
 }
 
@@ -868,6 +921,7 @@ EOF
     printf  '  运行模式 : '
     case "$INIT_SYSTEM" in
         procd) echo "procd 系统服务 (${PROCD_FILE})" ;;
+        openrc) echo "OpenRC 系统服务 (${PROCD_FILE})" ;;
         *)     echo "手动后台进程 (PID: $(cat "$PID_FILE"))" ;;
     esac
     printf  '  管理指令 :\n'
@@ -875,6 +929,10 @@ EOF
         printf  '    ● 查看日志     : tail -f %s\n' "${LOG_FILE}"
         printf  '    ● 查看状态     : %s status\n' "${PROCD_FILE}"
         printf  '    ● 启动/停止    : %s {start|stop|restart}\n' "${PROCD_FILE}"
+    elif [ "$INIT_SYSTEM" = "openrc" ]; then
+        printf  '    ● 查看日志     : tail -f %s\n' "${LOG_FILE}"
+        printf  '    ● 查看状态     : rc-service %s status\n' "${SERVICE_NAME}"
+        printf  '    ● 启动/停止    : rc-service %s {start|stop|restart}\n' "${SERVICE_NAME}"
     else
         printf  '    ● 查看日志     : tail -f %s\n' "${LOG_FILE}"
         printf  '    ● 启动/停止    : sh %s {start|stop|restart|status|log}\n' "${SCRIPT_FILE}.ctl"
@@ -935,6 +993,8 @@ update_probe() {
     step "停止服务..."
     if [ "$INIT_SYSTEM" = "procd" ] && [ -f "$PROCD_FILE" ]; then
         "$PROCD_FILE" stop >/dev/null 2>&1 || true
+    elif [ "$INIT_SYSTEM" = "openrc" ] && [ -f "$PROCD_FILE" ]; then
+        rc-service "$SERVICE_NAME" stop >/dev/null 2>&1 || true
     elif [ -f "$PID_FILE" ]; then
         old_pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
         if [ -n "$old_pid" ] && kill -0 "$old_pid" >/dev/null 2>&1; then
@@ -952,6 +1012,9 @@ update_probe() {
     if [ "$INIT_SYSTEM" = "procd" ]; then
         "$PROCD_FILE" enable >/dev/null 2>&1 || true
         "$PROCD_FILE" restart || error "服务启动失败"
+    elif [ "$INIT_SYSTEM" = "openrc" ]; then
+        rc-update add "${SERVICE_NAME}" default >/dev/null 2>&1 || true
+        rc-service "${SERVICE_NAME}" restart || error "服务启动失败"
     else
         sh "${SCRIPT_FILE}.ctl" start || error "服务启动失败"
     fi
@@ -964,7 +1027,6 @@ update_probe() {
         local exec_line s_id s_sec s_url s_interval s_ping s_ct s_cu s_cm s_bd s_reset
         if [ "$INIT_SYSTEM" = "procd" ] && [ -f "$PROCD_FILE" ]; then
             exec_line=$(grep "procd_set_param command" "$PROCD_FILE" 2>/dev/null | head -1 || echo "")
-            # procd 格式: procd_set_param command /bin/sh /usr/local/bin/cf-probe.sh "id" "sec" ...
             s_id=$(echo "$exec_line" | awk '{print $5}' | tr -d '"' || echo "")
             s_sec=$(echo "$exec_line" | awk '{print $6}' | tr -d '"' || echo "")
             s_url=$(echo "$exec_line" | awk '{print $7}' | tr -d '"' || echo "")
@@ -975,9 +1037,20 @@ update_probe() {
             s_cm=$(echo "$exec_line" | awk '{print $12}' | tr -d '"' || echo "")
             s_bd=$(echo "$exec_line" | awk '{print $13}' | tr -d '"' || echo "")
             s_reset=$(echo "$exec_line" | awk '{print $14}' | tr -d '"' || echo "1")
+        elif [ "$INIT_SYSTEM" = "openrc" ] && [ -f "$PROCD_FILE" ]; then
+            exec_line=$(grep "^command_args=" "$PROCD_FILE" 2>/dev/null | head -1 || echo "")
+            s_id=$(echo "$exec_line" | sed 's/^command_args=//' | awk '{print $2}' || echo "")
+            s_sec=$(echo "$exec_line" | sed 's/^command_args=//' | awk '{print $3}' || echo "")
+            s_url=$(echo "$exec_line" | sed 's/^command_args=//' | awk '{print $4}' || echo "")
+            s_interval=$(echo "$exec_line" | sed 's/^command_args=//' | awk '{print $5}' || echo "60")
+            s_ping=$(echo "$exec_line" | sed 's/^command_args=//' | awk '{print $6}' || echo "http")
+            s_ct=$(echo "$exec_line" | sed 's/^command_args=//' | awk '{print $7}' || echo "")
+            s_cu=$(echo "$exec_line" | sed 's/^command_args=//' | awk '{print $8}' || echo "")
+            s_cm=$(echo "$exec_line" | sed 's/^command_args=//' | awk '{print $9}' || echo "")
+            s_bd=$(echo "$exec_line" | sed 's/^command_args=//' | awk '{print $10}' || echo "")
+            s_reset=$(echo "$exec_line" | sed 's/^command_args=//' | awk '{print $11}' || echo "1")
         else
             exec_line=$(grep "^START_CMD=" "${SCRIPT_FILE}.ctl" 2>/dev/null | head -1 || echo "")
-            # START_CMD 格式: START_CMD=/usr/local/bin/cf-probe.sh "id" "sec" ...
             s_id=$(echo "$exec_line" | sed 's/^START_CMD=//' | awk '{print $2}' | tr -d '"' || echo "")
             s_sec=$(echo "$exec_line" | sed 's/^START_CMD=//' | awk '{print $3}' | tr -d '"' || echo "")
             s_url=$(echo "$exec_line" | sed 's/^START_CMD=//' | awk '{print $4}' | tr -d '"' || echo "")
@@ -1010,6 +1083,10 @@ update_probe() {
             printf  '    ● 查看日志     : tail -f %s\n' "${LOG_FILE}"
             printf  '    ● 查看状态    : %s status\n' "${PROCD_FILE}"
             printf  '    ● 启动/停止  : %s {start|stop|restart}\n' "${PROCD_FILE}"
+        elif [ "$INIT_SYSTEM" = "openrc" ]; then
+            printf  '    ● 查看日志     : tail -f %s\n' "${LOG_FILE}"
+            printf  '    ● 查看状态    : rc-service %s status\n' "${SERVICE_NAME}"
+            printf  '    ● 启动/停止  : rc-service %s {start|stop|restart}\n' "${SERVICE_NAME}"
         else
             printf  '    ● 查看日志     : tail -f %s\n' "${LOG_FILE}"
             printf  '    ● 启动/停止  : sh %s {start|stop|restart|status|log}\n' "${SCRIPT_FILE}.ctl"

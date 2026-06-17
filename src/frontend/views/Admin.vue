@@ -300,10 +300,6 @@
 
             <div class="settings-section">
               <div class="section-title"><span>▸</span> {{ trans.adminLoginSettings }}</div>
-              <p class="text-muted text-sm mb-3">
-                <span class="warning-icon">[i]</span>
-                {{ trans.adminLoginTip }}
-              </p>
 
               <div class="form-group">
                 <label class="form-label">{{ trans.username }}</label>
