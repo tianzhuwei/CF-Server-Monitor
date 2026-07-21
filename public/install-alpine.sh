@@ -883,17 +883,27 @@ get_probe() {
     port="${probe_target##* }"
 
     if has_nc_zero_io && get_time_ms >/dev/null 2>&1; then
-        local ok=0 total_rtt=0 i=1 rtt
+        local ok=0 values="" i=1 rtt
         while [ "$i" -le "$count" ]; do
             rtt=$(get_tcp_ping_nc "$host" "$port" 2>/dev/null)
             if [ -n "$rtt" ]; then
                 ok=$((ok + 1))
-                total_rtt=$((total_rtt + rtt))
+                values="$values $rtt"
             fi
             i=$((i + 1))
         done
         if [ "$ok" -gt 0 ]; then
-            echo "$((total_rtt / ok)) $(( (count - ok) * 100 / count ))"
+            local sorted median_val n=$ok
+            sorted=$(echo "$values" | tr ' ' '\n' | grep -v '^$' | sort -n)
+            if [ $((n % 2)) -eq 1 ]; then
+                median_val=$(echo "$sorted" | sed -n "$(( (n + 1) / 2 ))p")
+            else
+                local a b
+                a=$(echo "$sorted" | sed -n "$(( n / 2 ))p")
+                b=$(echo "$sorted" | sed -n "$(( n / 2 + 1 ))p")
+                median_val=$(( (a + b) / 2 ))
+            fi
+            echo "$median_val $(( (count - ok) * 100 / count ))"
         else
             echo "null 100"
         fi

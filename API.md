@@ -368,8 +368,6 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
   "turnstile_verified": "BASE64_AES_GCM_ENCRYPTED_STRING_OR_NULL",
   "last_workers_version": "V2.7.11 Beta",
   "last_agent_version": "1.3.0",
-  "csp_static": "https://unpkg.com,https://cdn.jsdelivr.net",
-  "csp_api": "https://api.example.com",
   "theme_options": {
     "a": 1,
     "b": 2
@@ -387,8 +385,6 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
 | `turnstile_verified` | string\|null | 当次验证成功后回写给客户端的"已验证凭证"，客户端应回存并在 1 小时内复用 |
 | `last_workers_version` | string\|null | 登录时返回远程最新 Workers 版本；来源为 GitHub `version.json`，后端缓存 5 分钟 |
 | `last_agent_version` | string\|null | 登录时返回远程最新 Agent 版本；来源为 GitHub `version.json`，后端缓存 5 分钟 |
-| `csp_static`         | string       | 静态资源 CSP 白名单；匿名请求也会返回 |
-| `csp_api`            | string       | API CSP 白名单；匿名请求也会返回 |
 | `theme_options`      | object       | 第三方主题自定义配置；未配置时为空对象，匿名请求也会返回 |
 | `show_long_history`  | boolean      | 是否允许查看超过 1 小时的历史曲线（未登录用户**强制** 1 小时上限） |
 

@@ -1218,8 +1218,8 @@ body::before {
    14. Ping Panel
    -------------------------------------------------------------------------- */
 .ping-panel {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    display: flex;
+    justify-content: space-around;
     gap: 4px;
     padding: 8px;
     background: var(--bg-secondary);

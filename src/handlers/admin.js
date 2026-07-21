@@ -7,7 +7,7 @@ import { verifyTurnstileToken, hashPassword } from '../utils/common.js';
 import { AppError, createSuccessResponse, createBadRequestResponse, createUnauthorizedResponse, createErrorResponse } from '../utils/errors.js';
 import { addServerColumns } from '../database/updateDatabase.js';
 import { sendNotification } from '../services/notification.js';
-import { getNextServerHistoryPartitionId } from '../database/indexOptimization.js';
+import { getNextServerHistoryPartitionId, HISTORY_MAX_PARTITION_ID } from '../database/indexOptimization.js';
 import { isValidTrafficCorrection, validateAgentConfigInput, validatePingNode } from '../utils/agentConfig.js';
 
 const PING_NODE_FIELDS = ['custom_ct', 'custom_cu', 'custom_cm', 'custom_bd'];
@@ -605,6 +605,119 @@ export async function handleAdminAPI(request, env, sys, loadFullSettings = null)
       return createSuccessResponse({ 
         success: true, 
         message: 'batchDeleted'
+      });
+    }
+    
+    else if (data.action === 'export_servers') {
+      try {
+        const servers = await env.DB.prepare('SELECT * FROM servers ORDER BY sort_order ASC').all();
+        return createSuccessResponse({
+          success: true,
+          servers: servers.results || [],
+          message: 'serversExported'
+        });
+      } catch (e) {
+        return createBadRequestResponse('serversExportFailed');
+      }
+    }
+    else if (data.action === 'import_servers') {
+      const { servers: importData } = data;
+      if (!importData || !Array.isArray(importData) || importData.length === 0) {
+        return createBadRequestResponse('noServersToImport');
+      }
+
+      const existingServers = await env.DB.prepare('SELECT id FROM servers').all();
+      const existingIds = new Set((existingServers.results || []).map(s => s.id));
+
+      const existingPartitionIds = await env.DB.prepare('SELECT history_partition_id FROM servers').all();
+      const usedPartitionIds = new Set(
+        (existingPartitionIds.results || []).map(s => s.history_partition_id).filter(id => id > 0)
+      );
+
+      let imported = 0;
+      let skipped = 0;
+      const skippedIds = [];
+
+      for (const server of importData) {
+        if (!server.id || !isValidUUID(server.id)) {
+          skipped++;
+          skippedIds.push(server.id || '(invalid)');
+          continue;
+        }
+
+        if (existingIds.has(server.id)) {
+          skipped++;
+          skippedIds.push(server.id);
+          continue;
+        }
+
+        let partitionId = Number(server.history_partition_id) || 0;
+        if (partitionId <= 0 || partitionId > HISTORY_MAX_PARTITION_ID || usedPartitionIds.has(partitionId)) {
+          partitionId = 0;
+          for (let id = 1; id <= HISTORY_MAX_PARTITION_ID; id++) {
+            if (!usedPartitionIds.has(id)) {
+              partitionId = id;
+              break;
+            }
+          }
+          if (partitionId === 0) {
+            skipped++;
+            skippedIds.push(server.id);
+            continue;
+          }
+        }
+
+        usedPartitionIds.add(partitionId);
+        existingIds.add(server.id);
+
+        try {
+          await env.DB.prepare(`
+            INSERT INTO servers (id, name, server_group, tags, note, price, expire_date,
+              traffic_limit, traffic_calc_type, reset_day, collect_interval, report_interval,
+              auto_update, custom_ct, custom_cu, custom_cm, custom_bd, rx_correction, tx_correction,
+              offline_notify_disabled, is_hidden, sort_order, history_partition_id, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            server.id,
+            server.name || '',
+            server.server_group || 'Default',
+            server.tags || '',
+            server.note || '',
+            server.price || '',
+            server.expire_date || '',
+            server.traffic_limit || '',
+            server.traffic_calc_type || 'total',
+            server.reset_day ?? 1,
+            server.collect_interval ?? 0,
+            server.report_interval ?? 60,
+            normalizeBooleanFlag(server.auto_update),
+            server.custom_ct || '',
+            server.custom_cu || '',
+            server.custom_cm || '',
+            server.custom_bd || '',
+            server.rx_correction ?? null,
+            server.tx_correction ?? null,
+            normalizeBooleanFlag(server.offline_notify_disabled),
+            normalizeBooleanFlag(server.is_hidden),
+            server.sort_order ?? 0,
+            partitionId,
+            server.timestamp || Date.now()
+          ).run();
+          imported++;
+        } catch (e) {
+          skipped++;
+          skippedIds.push(server.id);
+        }
+      }
+
+      clearServersListCache();
+
+      return createSuccessResponse({
+        success: true,
+        imported,
+        skipped,
+        skippedIds,
+        message: imported > 0 ? 'serversImported' : 'noServersImported'
       });
     }
     

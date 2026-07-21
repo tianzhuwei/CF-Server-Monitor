@@ -143,6 +143,7 @@
           :trans="trans"
           :active-tab="activeTab"
           :db-loading="dbLoading"
+          :selected-api-index="selectedApiIndex"
           @open-db-modal="openDbModal"
         />
       </div>
@@ -626,6 +627,7 @@ const copiedNoteServerId = ref(null)
 const deleteTargetOs = ref('linux')
 const uninstallCopied = ref(false)
 const saving = ref(false)
+
 
 const showDbModal = ref(false)
 const dbOperation = ref('')

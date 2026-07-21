@@ -4,7 +4,7 @@
 
 **演示地址**：<https://demo.huilang.me/>
 
-**当前Workers版本：V2.7.13 Beta; Agent版本：1.3.1**（见 [`version.json`](./version.json)）
+**当前Workers版本：V2.7.13 Beta2; Agent版本：1.3.2**
 
 > [!IMPORTANT]
 > V2.7.10 加入了 CSP 内容安全策略。默认只允许同源资源和必要的 Cloudflare/Google Fonts 资源；
@@ -24,7 +24,7 @@
 <details>
 <summary>更新记录</summary>
 
-- V2.7.13 Beta 新增显示模式选择功能，添加环形图模式
+- V2.7.13 Beta 新增显示模式选择功能，添加环形图模式，添加服务器导入导出功能，修复部分系统硬盘获取失败的bug，ping获取改成中位数。
 - V2.7.12 新增Agent自动更新功能，默认关闭，谨慎开启。（本次更新需要手动升级agent安装脚本后才生效）
 - V2.7.11 优化客户端探针脚本，减少服务器流量消耗，添加GitHub自动同步功能，实现Workers自动升级。增加了Workers/Agent版本升级提示。增加OS图标显示（本次更新需要手动升级agent安装脚本）
 - V2.7.10 加入了 CSP 内容安全策略。重构前端 admin 模块，新增 iOS Scriptable 小组件，新增 tags、note 字段
